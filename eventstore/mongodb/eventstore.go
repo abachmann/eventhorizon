@@ -191,32 +191,66 @@ func (s *EventStore) Load(ctx context.Context, id uuid.UUID) ([]eh.Event, error)
 		}
 	}
 
-	events := make([]eh.Event, len(aggregate.Events))
-	for i, dbEvent := range aggregate.Events {
-		// Create an event of the correct type and decode from raw BSON.
-		if len(dbEvent.RawData) > 0 {
-			var err error
-			if dbEvent.data, err = eh.CreateEventData(dbEvent.EventType); err != nil {
-				return nil, eh.EventStoreError{
-					Err:       ErrCouldNotUnmarshalEvent,
-					BaseErr:   err,
-					Namespace: eh.NamespaceFromContext(ctx),
-				}
-			}
-			if err := bson.Unmarshal(dbEvent.RawData, dbEvent.data); err != nil {
-				return nil, eh.EventStoreError{
-					Err:       ErrCouldNotUnmarshalEvent,
-					BaseErr:   err,
-					Namespace: eh.NamespaceFromContext(ctx),
-				}
-			}
-			dbEvent.RawData = nil
-		}
+	return s.convertDBEvents(ctx, aggregate)
+}
 
-		events[i] = event{dbEvent: dbEvent}
+// LoadFromVersion implements the Load from version method of the eventhorizon.EventStore interface.
+func (s *EventStore) LoadFromVersion(ctx context.Context, id uuid.UUID, startVersion int) ([]eh.Event, error) {
+	c := s.client.Database(s.dbName(ctx)).Collection("events")
+
+	pipeline := []bson.M{
+		{
+			"$match": bson.M{
+				"_id": bson.M{
+					"$eq": id.String(),
+				},
+			},
+		},
+		{
+			"$project": bson.M{
+				"version": 1,
+				"events": bson.M{
+					"$filter": bson.M{
+						"input": "$events",
+						"as":    "event",
+						"cond":  bson.M{"$gt": []interface{}{"$$event.version", startVersion}},
+					},
+				},
+			},
+		},
 	}
 
-	return events, nil
+	var aggregate aggregateRecord
+	cursor, err := c.Aggregate(ctx, pipeline)
+	if err == mongo.ErrNoDocuments {
+		return nil, eh.EventStoreError{
+			Err:       eh.ErrIncorrectEventVersion,
+			Namespace: eh.NamespaceFromContext(ctx),
+		}
+	} else if err != nil {
+		return nil, eh.EventStoreError{
+			BaseErr:   err,
+			Err:       err,
+			Namespace: eh.NamespaceFromContext(ctx),
+		}
+	}
+
+	if !cursor.Next(ctx) {
+		return nil, eh.EventStoreError{
+			Err:       eh.ErrIncorrectEventVersion,
+			Namespace: eh.NamespaceFromContext(ctx),
+		}
+	}
+
+	if err := cursor.Decode(&aggregate); err != nil {
+		return nil, eh.EventStoreError{
+			BaseErr:   err,
+			Err:       err,
+			Namespace: eh.NamespaceFromContext(ctx),
+		}
+	}
+
+	return s.convertDBEvents(ctx, aggregate)
 }
 
 // Replace implements the Replace method of the eventhorizon.EventStore interface.
@@ -303,6 +337,35 @@ func (s *EventStore) Clear(ctx context.Context) error {
 // Close closes the database client.
 func (s *EventStore) Close(ctx context.Context) {
 	s.client.Disconnect(ctx)
+}
+
+func (s *EventStore) convertDBEvents(ctx context.Context, aggregate aggregateRecord) ([]eh.Event, error) {
+	events := make([]eh.Event, len(aggregate.Events))
+	for i, dbEvent := range aggregate.Events {
+		// Create an event of the correct type and decode from raw BSON.
+		if len(dbEvent.RawData) > 0 {
+			var err error
+			if dbEvent.data, err = eh.CreateEventData(dbEvent.EventType); err != nil {
+				return nil, eh.EventStoreError{
+					Err:       ErrCouldNotUnmarshalEvent,
+					BaseErr:   err,
+					Namespace: eh.NamespaceFromContext(ctx),
+				}
+			}
+			if err := bson.Unmarshal(dbEvent.RawData, dbEvent.data); err != nil {
+				return nil, eh.EventStoreError{
+					Err:       ErrCouldNotUnmarshalEvent,
+					BaseErr:   err,
+					Namespace: eh.NamespaceFromContext(ctx),
+				}
+			}
+			dbEvent.RawData = nil
+		}
+
+		events[i] = event{dbEvent: dbEvent}
+	}
+
+	return events, nil
 }
 
 // dbName appends the namespace, if one is set, to the Database prefix to

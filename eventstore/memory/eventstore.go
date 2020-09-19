@@ -138,6 +138,31 @@ func (s *EventStore) Load(ctx context.Context, id uuid.UUID) ([]eh.Event, error)
 	return events, nil
 }
 
+// LoadFromVersion implements the Load from version method of the eventhorizon.EventStore interface.
+func (s *EventStore) LoadFromVersion(ctx context.Context, id uuid.UUID, startVersion int) ([]eh.Event, error) {
+	s.dbMu.RLock()
+	defer s.dbMu.RUnlock()
+
+	// Ensure that the namespace exists.
+	s.dbMu.RUnlock()
+	ns := s.namespace(ctx)
+	s.dbMu.RLock()
+
+	aggregate, ok := s.db[ns][id]
+	if !ok {
+		return []eh.Event{}, nil
+	}
+
+	events := make([]eh.Event, len(aggregate.Events))
+	for i, dbEvent := range aggregate.Events {
+		if dbEvent.Version >= startVersion {
+			events[i] = event{dbEvent: dbEvent}
+		}
+	}
+
+	return events, nil
+}
+
 // Replace implements the Replace method of the eventhorizon.EventStore interface.
 func (s *EventStore) Replace(ctx context.Context, event eh.Event) error {
 	// Ensure that the namespace exists.

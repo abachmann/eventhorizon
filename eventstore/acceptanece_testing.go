@@ -136,6 +136,24 @@ func AcceptanceTest(t *testing.T, ctx context.Context, store eh.EventStore) []eh
 		}
 	}
 
+	// Load events from version.
+	startVersion := 4
+	events, err = store.LoadFromVersion(ctx, id, startVersion)
+	if err != nil {
+		t.Error("there should be no error:", err)
+	}
+	expectedEvents = []eh.Event{
+		event4, event5, event6, // Version 4, 5 and 6
+	}
+	for i, event := range events {
+		if err := mocks.CompareEvents(event, expectedEvents[i]); err != nil {
+			t.Error("the event was incorrect:", err)
+		}
+		if event.Version() != startVersion+i+1 {
+			t.Error("the event version should be correct:", event, event.Version())
+		}
+	}
+
 	// Load events for another aggregate.
 	events, err = store.Load(ctx, id2)
 	if err != nil {
